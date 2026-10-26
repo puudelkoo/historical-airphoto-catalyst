@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Zürich-Kloten — 1976 vs dziś</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/geotiff@3.0.5/dist-browser/geotiff.min.js"></script>
+
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #111;
+        color: #fff;
+        font-family: Arial, sans-serif;
+      }
+
+      .page {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        padding: 14px 18px 12px;
+        gap: 10px;
+      }
+
+      .header {
+        flex: 0 0 auto;
+      }
+
+      h1 {
+        margin: 0 0 4px;
+        font-size: 28px;
+      }
+
+      .subtitle {
+        color: #aaa;
+        font-size: 14px;
+      }
+
+      .toolbar {
+        flex: 0 0 auto;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      button {
+        background: #222;
+        color: white;
+        border: 1px solid #444;
+        padding: 8px 12px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #333;
+      }
+
+      #zoomInfo {
+        color: #aaa;
+        font-size: 14px;
+        margin-left: 4px;
+      }
+
+      #status {
+        color: #aaa;
+        font-size: 13px;
+      }
+
+      #viewer {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+        background: #000;
+        border: 1px solid #333;
+        cursor: grab;
+        display: none;
+      }
+
+      #viewer.dragging {
+        cursor: grabbing;
+      }
+
+      #scene {
+        position: absolute;
+        left: 0;
+        top: 0;
+        transform-origin: 0 0;
+        will-change: transform;
+      }
+
+      canvas {
+        position: absolute;
+        left: 0;
+        top: 0;
+        display: block;
+      }
+
+      #currentCanvas {
+        opacity: 0.5;
+      }
+
+      .label {
+        position: absolute;
+        top: 12px;
+        padding: 7px 11px;
+        background: rgba(0, 0, 0, 0.7);
+        border-radius: 6px;
+        font-weight: bold;
+        pointer-events: none;
+        z-index: 5;
+      }
+
+      #historicalLabel {
+        left: 12px;
+      }
+
+      #currentLabel {
+        right: 12px;
+      }
+
+      .bottom-panel {
+        flex: 0 0 auto;
+        display: none;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .opacity-wrap {
+        flex: 1;
+        min-width: 240px;
+      }
+
+      .opacity-title {
+        display: flex;
+        justify-content: space-between;
+        font-size: 13px;
+        margin-bottom: 4px;
+      }
+
+      #opacity {
+        width: 100%;
+      }
+
+      .hint {
+        color: #777;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="page">
+      <div class="header">
+        <h1>Zürich-Kloten — 1976 vs dziś</h1>
+
+        <div class="subtitle">
+          Porównanie historycznej ortomozaiki z aktualnym SWISSIMAGE
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <button id="zoomIn">Przybliż</button>
+        <button id="zoomOut">Oddal</button>
+        <button id="resetView">Resetuj widok</button>
+
+        <span id="zoomInfo">Powiększenie: 100%</span>
+
+        <span id="status"> Ładowanie rastrów... </span>
+      </div>
+
+      <div id="viewer">
+        <div id="scene">
+          <canvas id="historicalCanvas"></canvas>
+          <canvas id="currentCanvas"></canvas>
+        </div>
+
+        <div id="historicalLabel" class="label">1976</div>
+
+        <div id="currentLabel" class="label">Obecnie</div>
+      </div>
+
+      <div id="bottomPanel" class="bottom-panel">
+        <div class="opacity-wrap">
+          <div class="opacity-title">
+            <span>1976</span>
+            <span id="opacityValue">50%</span>
+            <span>Obecnie</span>
+          </div>
+
+          <input id="opacity" type="range" min="0" max="100" value="50" />
+        </div>
+
+        <div class="hint">
+          Kółko myszy = przybliżanie • przeciąganie = przesuwanie • Resetuj
+          widok = powrót
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const HISTORICAL_URL = "historical_1976_web.tif";
+      const CURRENT_URL = "current_web.tif";
+
+      const historicalCanvas = document.getElementById("historicalCanvas");
+
+      const currentCanvas = document.getElementById("currentCanvas");
+
+      const viewer = document.getElementById("viewer");
+
+      const scene = document.getElementById("scene");
+
+      const bottomPanel = document.getElementById("bottomPanel");
+
+      const status = document.getElementById("status");
+
+      const opacity = document.getElementById("opacity");
+
+      const opacityValue = document.getElementById("opacityValue");
+
+      const zoomInfo = document.getElementById("zoomInfo");
+
+      const zoomInButton = document.getElementById("zoomIn");
+
+      const zoomOutButton = document.getElementById("zoomOut");
+
+      const resetViewButton = document.getElementById("resetView");
+
+      let scale = 1;
+      let offsetX = 0;
+      let offsetY = 0;
+
+      let isDragging = false;
+
+      let startMouseX = 0;
+      let startMouseY = 0;
+
+      let startOffsetX = 0;
+      let startOffsetY = 0;
+
+      let imageWidth = 0;
+      let imageHeight = 0;
+
+      // Aktualizacja położenia i skali obrazu
+      function updateTransform() {
+        scene.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+
+        zoomInfo.textContent = `Powiększenie: ${Math.round(scale * 100)}%`;
+      }
+
+      // Dopasowanie całego obrazu do dostępnego okna
+      function resetView() {
+        const viewerWidth = viewer.clientWidth;
+
+        const viewerHeight = viewer.clientHeight;
+
+        const scaleX = viewerWidth / imageWidth;
+
+        const scaleY = viewerHeight / imageHeight;
+
+        scale = Math.min(scaleX, scaleY);
+
+        const displayWidth = imageWidth * scale;
+
+        const displayHeight = imageHeight * scale;
+
+        offsetX = (viewerWidth - displayWidth) / 2;
+
+        offsetY = (viewerHeight - displayHeight) / 2;
+
+        updateTransform();
+      }
+
+      // Przybliżanie względem pozycji kursora
+      function zoomAtPoint(mouseX, mouseY, factor) {
+        const oldScale = scale;
+
+        scale *= factor;
+
+        scale = Math.max(0.1, Math.min(scale, 12));
+
+        const scaleRatio = scale / oldScale;
+
+        offsetX = mouseX - (mouseX - offsetX) * scaleRatio;
+
+        offsetY = mouseY - (mouseY - offsetY) * scaleRatio;
+
+        updateTransform();
+      }
+
+      // Przybliżanie i oddalanie kółkiem myszy
+      viewer.addEventListener(
+        "wheel",
+        (event) => {
+          event.preventDefault();
+
+          const rect = viewer.getBoundingClientRect();
+
+          const mouseX = event.clientX - rect.left;
+
+          const mouseY = event.clientY - rect.top;
+
+          const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+
+          zoomAtPoint(mouseX, mouseY, factor);
+        },
+        {
+          passive: false,
+        },
+      );
+
+      // Przyciski przybliżania i oddalania
+      zoomInButton.addEventListener("click", () => {
+        zoomAtPoint(viewer.clientWidth / 2, viewer.clientHeight / 2, 1.2);
+      });
+
+      zoomOutButton.addEventListener("click", () => {
+        zoomAtPoint(viewer.clientWidth / 2, viewer.clientHeight / 2, 1 / 1.2);
+      });
+
+      // Reset widoku
+      resetViewButton.addEventListener("click", resetView);
+
+      // Rozpoczęcie przesuwania obrazu
+      viewer.addEventListener("mousedown", (event) => {
+        isDragging = true;
+
+        viewer.classList.add("dragging");
+
+        startMouseX = event.clientX;
+
+        startMouseY = event.clientY;
+
+        startOffsetX = offsetX;
+
+        startOffsetY = offsetY;
+      });
+
+      // Przesuwanie obrazu
+      window.addEventListener("mousemove", (event) => {
+        if (!isDragging) {
+          return;
+        }
+
+        const dx = event.clientX - startMouseX;
+
+        const dy = event.clientY - startMouseY;
+
+        offsetX = startOffsetX + dx;
+
+        offsetY = startOffsetY + dy;
+
+        updateTransform();
+      });
+
+      // Zakończenie przesuwania
+      window.addEventListener("mouseup", () => {
+        isDragging = false;
+
+        viewer.classList.remove("dragging");
+      });
+
+      // Sterowanie przezroczystością współczesnego obrazu
+      opacity.addEventListener("input", () => {
+        const value = Number(opacity.value);
+
+        currentCanvas.style.opacity = value / 100;
+
+        opacityValue.textContent = value + "%";
+      });
+
+      // Wczytanie GeoTIFF-a
+      async function loadGeoTIFF(url) {
+        const response = await fetch(url);
+
+        if (!response.ok) {
+          throw new Error("Nie można wczytać pliku: " + url);
+        }
+
+        const buffer = await response.arrayBuffer();
+
+        const tiff = await GeoTIFF.fromArrayBuffer(buffer);
+
+        return await tiff.getImage();
+      }
+
+      // Renderowanie historycznej ortomozaiki
+      async function renderHistorical(image, canvas, width, height) {
+        const raster = await image.readRasters({
+          width,
+          height,
+          samples: [0],
+          interleave: true,
+          resampleMethod: "bilinear",
+        });
+
+        canvas.width = width;
+
+        canvas.height = height;
+
+        const ctx = canvas.getContext("2d");
+
+        const output = ctx.createImageData(width, height);
+
+        const pixels = output.data;
+
+        let min = Infinity;
+
+        let max = -Infinity;
+
+        for (let i = 0; i < raster.length; i++) {
+          const value = raster[i];
+
+          if (Number.isFinite(value) && value !== 0 && value !== -32768) {
+            if (value < min) {
+              min = value;
+            }
+
+            if (value > max) {
+              max = value;
+            }
+          }
+        }
+
+        const range = max - min || 1;
+
+        for (let i = 0; i < raster.length; i++) {
+          const value = raster[i];
+
+          const index = i * 4;
+
+          if (!Number.isFinite(value) || value === 0 || value === -32768) {
+            pixels[index + 3] = 0;
+
+            continue;
+          }
+
+          const gray = Math.max(
+            0,
+            Math.min(255, ((value - min) / range) * 255),
+          );
+
+          pixels[index] = gray;
+
+          pixels[index + 1] = gray;
+
+          pixels[index + 2] = gray;
+
+          pixels[index + 3] = 255;
+        }
+
+        ctx.putImageData(output, 0, 0);
+      }
+
+      // Renderowanie współczesnego obrazu
+      async function renderCurrent(image, canvas, width, height) {
+        const samples = image.getSamplesPerPixel();
+
+        const sampleList = samples >= 3 ? [0, 1, 2] : [0];
+
+        const raster = await image.readRasters({
+          width,
+          height,
+          samples: sampleList,
+          interleave: true,
+          resampleMethod: "bilinear",
+        });
+
+        canvas.width = width;
+
+        canvas.height = height;
+
+        const ctx = canvas.getContext("2d");
+
+        const output = ctx.createImageData(width, height);
+
+        const pixels = output.data;
+
+        const channels = sampleList.length;
+
+        for (let i = 0; i < width * height; i++) {
+          const sourceIndex = i * channels;
+
+          const outputIndex = i * 4;
+
+          if (channels >= 3) {
+            pixels[outputIndex] = raster[sourceIndex];
+
+            pixels[outputIndex + 1] = raster[sourceIndex + 1];
+
+            pixels[outputIndex + 2] = raster[sourceIndex + 2];
+          } else {
+            const gray = raster[sourceIndex];
+
+            pixels[outputIndex] = gray;
+
+            pixels[outputIndex + 1] = gray;
+
+            pixels[outputIndex + 2] = gray;
+          }
+
+          pixels[outputIndex + 3] = 255;
+        }
+
+        ctx.putImageData(output, 0, 0);
+      }
+
+      // Uruchomienie aplikacji
+      async function init() {
+        try {
+          status.textContent = "Ładowanie rastrów...";
+
+          const [historicalImage, currentImage] = await Promise.all([
+            loadGeoTIFF(HISTORICAL_URL),
+            loadGeoTIFF(CURRENT_URL),
+          ]);
+
+          const MAX_WIDTH = 1800;
+
+          const ratio =
+            historicalImage.getHeight() / historicalImage.getWidth();
+
+          imageWidth = Math.min(MAX_WIDTH, historicalImage.getWidth());
+
+          imageHeight = Math.round(imageWidth * ratio);
+
+          await renderHistorical(
+            historicalImage,
+            historicalCanvas,
+            imageWidth,
+            imageHeight,
+          );
+
+          await renderCurrent(
+            currentImage,
+            currentCanvas,
+            imageWidth,
+            imageHeight,
+          );
+
+          currentCanvas.style.opacity = 0.5;
+
+          viewer.style.display = "block";
+
+          bottomPanel.style.display = "flex";
+
+          status.textContent = "Gotowe";
+
+          resetView();
+        } catch (error) {
+          console.error(error);
+
+          status.textContent = "Błąd podczas wczytywania rastrów.";
+        }
+      }
+
+      init();
+    </script>
+  </body>
+</html>
